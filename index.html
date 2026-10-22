@@ -128,6 +128,12 @@
   .toggle-row.show{display:flex}
   .toggle-row input{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
 
+  /* Instant-hint row: Hint button + Guide mode switch */
+  .hint-row{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:12px}
+  .guide-toggle{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700;color:var(--muted);cursor:pointer}
+  .guide-toggle input{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
+  button:disabled{opacity:.45;cursor:default;box-shadow:none}
+
   .hint{color:var(--muted);font-size:12.5px;margin-top:14px;text-align:center;line-height:1.55;max-width:420px}
 
   /* Trust bar + 3-step flow + options (below the board) */
@@ -283,6 +289,10 @@
   <button id="uploadBtn" class="ghost" type="button">📷 Use YOUR photo</button>
   <button id="resetTimer" class="ghost" type="button">Reset Timer</button>
 </div>
+<div class="hint-row">
+  <button id="hintBtn" class="ghost small" type="button" disabled>💡 Hint</button>
+  <label class="guide-toggle"><input type="checkbox" id="guideToggle"> Guide</label>
+</div>
 <p class="upload-note" id="uploadNote">Your photo is sliced right here in your browser — it never leaves your device.</p>
 
 <label class="toggle-row" id="badgeRow">
@@ -382,6 +392,10 @@ function manhattanSum(b, n){
 var MIN_SHUFFLE_DIST = { 3: 12, 4: 32, 5: 60 };
 // Random-walk length used to scramble, per size (before loop erasure).
 var WALK_STEPS = { 3: 60, 4: 120, 5: 200 };
+// Idle auto-hint delay (ms without a valid move). The Hint button and
+// Guide mode show step one of the maintained solution instantly; this
+// timer only exists to teach players that the hint feature is there.
+var IDLE_HINT_MS = 8000;
 // Apply one "click" step: slide the segment that starts at `click` toward
 // the blank. Returns the number of tiles moved (0 when the click is not a
 // legal slide). Mutates b. A step is fully described by its click position,
@@ -672,6 +686,8 @@ var toastEl = document.getElementById("toast");
 var badgeRow = document.getElementById("badgeRow");
 var badgeToggle = document.getElementById("badgeToggle");
 var fileInput = document.getElementById("fileInput");
+var hintBtn = document.getElementById("hintBtn");
+var guideToggle = document.getElementById("guideToggle");
 
 var N = 4;                    // board size: 3, 4 or 5
 var mode = "picture";         // "picture" (default) or "numbers"
@@ -687,7 +703,8 @@ var started = false;
 var won = false;
 var best = null;
 var solutionPath = null; // guaranteed solution of the current board, as click positions (maintained on every move)
-var idleTimerId = null;  // 15s idle-hint countdown
+var idleTimerId = null;  // idle auto-hint countdown (IDLE_HINT_MS)
+var guideOn = false;     // Guide mode: keep the next-step hint on screen, refreshed after every move
 var guideValue = null;   // tile value currently pulsing for the onboarding guide
 var hintedValue = null;  // tile value currently pulsing for the idle hint
 var imgOverlayMode = null; // "intro" (tap shuffles & starts) or "preview" (tap just closes)
@@ -806,14 +823,16 @@ function hideGuide(){
   guideHandEl.style.display = "none";
   guideTextEl.style.display = "none";
 }
-// ---------- Idle hint (15s without a valid move) ----------
+// ---------- Hint display (Hint button / Guide mode / idle auto-hint) ----------
+// One display path for all three triggers: step one of the maintained
+// solutionPath, shown as a pulsing tile + direction arrow + tag.
 function clearIdleHint(){
   if (hintedValue !== null && tileEls[hintedValue]) tileEls[hintedValue].classList.remove("pulse");
   hintedValue = null;
   hintTagEl.style.display = "none";
   hintArrowEl.style.display = "none";
 }
-function showIdleHint(){
+function showCurrentHint(){
   if (won || isSolved(board, N)) return;
   if (!solutionPath || !solutionPath.length) return;
   hideGuide(); // the hint supersedes the onboarding guide
@@ -835,11 +854,16 @@ function showIdleHint(){
 }
 function resetIdleTimer(){
   if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
-  if (won) return;
+  if (won || guideOn) return; // Guide mode keeps a hint on screen — no idle trigger needed
   idleTimerId = setTimeout(function(){
     idleTimerId = null;
-    showIdleHint();
-  }, 15000);
+    showCurrentHint();
+  }, IDLE_HINT_MS);
+}
+// The Hint button only makes sense mid-game: disabled before the shuffle
+// (intro reveal, no solution yet) and after the win.
+function refreshHintControls(){
+  hintBtn.disabled = won || !solutionPath || !solutionPath.length;
 }
 function startTimer(){
   if (timerId) return;
@@ -856,8 +880,7 @@ function stopTimer(){
 function onTileTap(e){
   if (won) return;
   if (Date.now() - lastSwipeAt < 400) return; // this click is the tail of a swipe
-  clearIdleHint();
-  resetIdleTimer();
+  if (!guideOn){ clearIdleHint(); resetIdleTimer(); } // Guide mode: tryMove refreshes the hint itself
   var v = parseInt(e.currentTarget.getAttribute("data-value"), 10);
   tryMove(board.indexOf(v));
 }
@@ -875,6 +898,7 @@ function tryMove(pos){
   render();
   if (isSolved(board, N)){
     won = true;
+    refreshHintControls();
     stopTimer();
     if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
     if (best === null || moves < best){
@@ -899,6 +923,8 @@ function tryMove(pos){
       revealLineEl.style.display = "none";
     }
     setTimeout(showWin, 220);
+  } else if (guideOn) {
+    showCurrentHint(); // Guide mode: point at the new first step right away
   } else {
     resetIdleTimer();
   }
@@ -972,6 +998,7 @@ thumbEl.addEventListener("click", function(){
 function resetState(){
   moves = 0; seconds = 0; started = false; won = false;
   solutionPath = null;
+  refreshHintControls();
   stopTimer();
   if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
   clearIdleHint();
@@ -987,6 +1014,7 @@ function startShuffledGame(){
   render();
   showGuide();
   resetIdleTimer();
+  refreshHintControls();
 }
 function newGame(){
   hideImageOverlay();
@@ -1070,6 +1098,27 @@ document.getElementById("newGame").addEventListener("click", newGame);
 document.getElementById("playAgain").addEventListener("click", newGame);
 document.getElementById("resetTimer").addEventListener("click", function(){
   seconds = 0; timeEl.textContent = "0:00";
+});
+// ---------- Instant hint controls ----------
+// Hint button: show step one of the solution right now, no waiting. The
+// pending idle countdown is cancelled so it doesn't re-fire pointlessly;
+// the next move re-arms it through the normal move flow.
+hintBtn.addEventListener("click", function(){
+  if (won || !solutionPath || !solutionPath.length) return;
+  if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
+  showCurrentHint();
+});
+// Guide switch: on = the hint stays on screen and refreshes after every
+// move (handled in tryMove); off = clear it and fall back to the idle timer.
+guideToggle.addEventListener("change", function(){
+  guideOn = guideToggle.checked;
+  if (guideOn){
+    if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
+    showCurrentHint();
+  } else {
+    clearIdleHint();
+    resetIdleTimer();
+  }
 });
 
 // ---------- Buyer upload: photo is read + cropped locally, never uploaded ----------

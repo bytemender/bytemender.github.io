@@ -95,11 +95,22 @@
   }
   .tile:active .face{filter:brightness(1.12)}
 
-  /* Corner thumbnail of the finished picture (picture mode only; tap = only preview entry) */
+  /* Goal bar: its own strip in normal flow ABOVE the board (picture mode
+     only). The finished-picture thumbnail lives here — never on the board,
+     so it can never cover a tile at any board size. Tap = only preview entry. */
+  #goalBar{
+    display:none;width:min(92vw,420px);height:54px;margin:0 0 10px;
+    align-items:center;justify-content:flex-end;gap:9px;
+  }
+  #goalBar.show{display:flex}
+  #goalBar .goal-label{
+    font-size:11px;font-weight:700;color:var(--muted);
+    text-transform:uppercase;letter-spacing:1.2px;
+  }
   #thumb{
-    position:absolute;top:-12px;right:-8px;width:24%;aspect-ratio:1/1;object-fit:cover;
-    border-radius:10px;border:2px solid var(--accent);z-index:5;cursor:pointer;display:none;
-    box-shadow:0 8px 20px rgba(0,0,0,.5);
+    width:54px;height:54px;object-fit:cover;flex:none;
+    border-radius:9px;border:2px solid var(--accent);cursor:pointer;
+    box-shadow:0 4px 12px rgba(0,0,0,.45);
   }
 
   .controls{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
@@ -164,6 +175,13 @@
     font-size:12.5px;font-weight:700;padding:5px 11px;border-radius:999px;white-space:nowrap;
     pointer-events:none;box-shadow:0 8px 20px rgba(0,0,0,.45);
   }
+  /* Idle hint direction arrow, centered on the tile to tap */
+  #hintArrow{
+    position:absolute;z-index:6;display:none;transform:translate(-50%,-50%);
+    font-size:30px;line-height:1;pointer-events:none;
+    filter:drop-shadow(0 2px 4px rgba(0,0,0,.7));
+    text-shadow:0 1px 3px rgba(0,0,0,.6);
+  }
   /* Win rank badge + beat line */
   .rank-badge{font-size:29px;font-weight:800;letter-spacing:1.5px;margin:4px 0 8px;text-shadow:0 2px 16px rgba(0,0,0,.45)}
   .beat-line{color:var(--accent);font-weight:700;font-size:15px;margin:-6px 0 14px}
@@ -179,10 +197,17 @@
   .overlay.show{display:flex}
   #imgOverlay{z-index:30;background:rgba(7,8,20,.86);cursor:pointer;flex-direction:column;gap:16px;padding:20px}
   #imgFull{width:min(88vw,480px);aspect-ratio:1/1;object-fit:cover;border-radius:16px;border:2px solid var(--accent);box-shadow:0 24px 60px rgba(0,0,0,.6)}
+  /* Intro call-to-action: a big, unmissable capsule button (the whole
+     overlay is tappable too, but nobody should have to guess that). */
   #imgCaption{
-    background:var(--accent);color:#14152b;font-weight:800;font-size:16px;
-    padding:11px 24px;border-radius:999px;box-shadow:0 8px 22px rgba(255,176,32,.4);
-    animation:handFloat 1.4s ease-in-out infinite;
+    background:var(--accent);color:#14152b;font-weight:800;font-size:19px;
+    padding:16px 34px;border-radius:999px;cursor:pointer;text-align:center;
+    box-shadow:0 10px 30px rgba(255,176,32,.5);
+  }
+  #imgCaption.pulse{animation:captionPulse 1.1s ease-in-out infinite}
+  @keyframes captionPulse{
+    0%,100%{transform:scale(1);box-shadow:0 10px 30px rgba(255,176,32,.45)}
+    50%{transform:scale(1.07);box-shadow:0 10px 44px rgba(255,176,32,.85)}
   }
   .card{
     background:var(--panel2);border:1px solid #343a6e;border-radius:20px;
@@ -240,12 +265,17 @@
   <div class="stat"><div class="label">Best</div><div class="value" id="best">—</div></div>
 </div>
 
+<div id="goalBar">
+  <span class="goal-label">Goal 👁</span>
+  <img id="thumb" alt="Finished picture preview — tap to enlarge">
+</div>
+
 <div id="board-wrap">
   <div id="board" data-size="4" aria-label="Sliding puzzle board"></div>
-  <img id="thumb" alt="Finished picture preview — tap to enlarge">
   <div id="guideHand" aria-hidden="true">👆</div>
   <div id="guideText">Tap a tile next to the empty space</div>
-  <div id="hintTag">💡 Try this one</div>
+  <div id="hintTag">💡 Hint</div>
+  <div id="hintArrow" aria-hidden="true">⬆</div>
 </div>
 
 <div class="controls">
@@ -294,7 +324,7 @@
 
 <div class="overlay" id="imgOverlay" role="dialog" aria-modal="true">
   <img id="imgFull" alt="The full picture">
-  <div id="imgCaption">Tap to shuffle &amp; play</div>
+  <div id="imgCaption" class="pulse">▶ Tap to shuffle &amp; play</div>
 </div>
 
 <div id="toast" role="status"></div>
@@ -342,29 +372,102 @@ function manhattanSum(b, n){
   }
   return s;
 }
-// Minimum shuffle depth per size, scaled from the v2 4x4 floor of 45
-// (roughly proportional to the board's typical Manhattan range).
-var MIN_SHUFFLE_DIST = { 3: 18, 4: 45, 5: 90 };
-function shuffledBoard(n){
-  var cells = n * n, minDist = MIN_SHUFFLE_DIST[n] || 45;
-  var b, tries = 0;
-  do {
-    b = solvedBoard(n);
-    // Fisher–Yates
-    for (var i = cells - 1; i > 0; i--){
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = b[i]; b[i] = b[j]; b[j] = tmp;
+// Minimum shuffle depth per size: a floor on the scrambled board's
+// Manhattan sum so a fluky near-solved walk endpoint is re-walked.
+// Calibration note: a uniformly random board averages ~14 (3x3), ~37.5
+// (4x4), ~77 (5x5); the v2-era floors (18/45/90) sat ABOVE those means and
+// only ever passed by max-of-many-draws luck. These floors sit just under
+// the walk distribution's typical range (measured medians ~14 / ~37 / ~71),
+// so a normal attempt passes while a degenerate endpoint still retries.
+var MIN_SHUFFLE_DIST = { 3: 12, 4: 32, 5: 60 };
+// Random-walk length used to scramble, per size (before loop erasure).
+var WALK_STEPS = { 3: 60, 4: 120, 5: 200 };
+// Apply one "click" step: slide the segment that starts at `click` toward
+// the blank. Returns the number of tiles moved (0 when the click is not a
+// legal slide). Mutates b. A step is fully described by its click position,
+// interpreted against the board it is applied to.
+function applyClick(b, n, click){
+  var path = slidePath(b, n, click);
+  if (!path) return 0;
+  return applySlide(b, n, path);
+}
+// The step that undoes a move is "click the cell the blank came from": if a
+// move was applied to boardBefore, its inverse — applied to the board that
+// move produced — is the click position boardBefore.indexOf(0).
+//
+// maintainSolution keeps one invariant across a player move: "sol is a
+// genuine solution of the current board". It prepends the inverse of the
+// player's move to the old solution, then erases a mutually-inverse pair at
+// the head if one appears. That single rule also covers the case where the
+// player played exactly the suggested first step: the prepended inverse and
+// the old first step cancel, so the path just pops by one.
+function maintainSolution(sol, n, boardBefore, boardAfter){
+  var out = [boardBefore.indexOf(0)].concat(sol);
+  while (out.length >= 2){
+    var scratch = boardAfter.slice();
+    if (!applyClick(scratch, n, out[0])) break;
+    if (!applyClick(scratch, n, out[1])) break;
+    if (!boardsEqual(scratch, boardAfter)) break;
+    out.splice(0, 2);
+  }
+  return out;
+}
+// Scramble by a loop-erased random walk AWAY from the solved board, so the
+// scramble comes with a guaranteed solution for free: the walk steps undone
+// in reverse order. solution[k] is a click position and solution[0] is
+// always a genuinely good next step — this is what the idle hint shows, so
+// following hints can never oscillate (a greedy hint cannot solve the last
+// row; this path provably can, because it IS a solution).
+function scrambleBoard(n){
+  var target = WALK_STEPS[n] || 120;
+  var minDist = MIN_SHUFFLE_DIST[n] || 45;
+  var best = null;
+  for (var attempt = 0; attempt < 100; attempt++){
+    var states = [solvedBoard(n)];
+    var clicks = [];  // walk steps, as click positions on successive states
+    var blanks = [];  // blank position before each walk step
+    var seen = {};
+    seen[states[0].join(",")] = 0;
+    var b = states[0].slice();
+    var guard = 0;
+    while (clicks.length < target && guard++ < target * 80){
+      var blank = b.indexOf(0);
+      var opts = [];
+      for (var pos = 0; pos < b.length; pos++){
+        if (pos === blank) continue;
+        // Never immediately undo the previous walk step.
+        if (clicks.length && pos === blanks[blanks.length - 1]) continue;
+        if (slidePath(b, n, pos)) opts.push(pos);
+      }
+      if (!opts.length) break;
+      var click = opts[Math.floor(Math.random() * opts.length)];
+      blanks.push(blank);
+      clicks.push(click);
+      applyClick(b, n, click);
+      var key = b.join(",");
+      if (seen[key] !== undefined){
+        // Loop: rewind to the first visit of this state, erasing the cycle.
+        var j = seen[key];
+        states.length = j + 1;
+        clicks.length = j;
+        blanks.length = j;
+        b = states[j].slice();
+        seen = {};
+        for (var s = 0; s < states.length; s++) seen[states[s].join(",")] = s;
+      } else {
+        states.push(b.slice());
+        seen[key] = states.length - 1;
+      }
     }
-    // If unsolvable, swap two non-blank tiles: flips inversion parity
-    // (and therefore solvability on any width), keeps the blank in place.
-    if (!isSolvable(b, n)){
-      var idx = [];
-      for (var k = 0; k < cells; k++) if (b[k] !== 0) idx.push(k);
-      var t2 = b[idx[0]]; b[idx[0]] = b[idx[1]]; b[idx[1]] = t2;
-    }
-    tries++;
-  } while ((isSolved(b, n) || manhattanSum(b, n) < minDist) && tries < 200);
-  return b;
+    // The solution is the walk undone in reverse: undoing walk step i is
+    // the click "blank position before step i", taken last-step-first.
+    var solution = [];
+    for (var i = clicks.length - 1; i >= 0; i--) solution.push(blanks[i]);
+    var cand = { board: b.slice(), solution: solution };
+    if (!isSolved(b, n) && manhattanSum(b, n) >= minDist) return cand;
+    if (!isSolved(b, n) && (!best || manhattanSum(b, n) > manhattanSum(best.board, n))) best = cand;
+  }
+  return best;
 }
 // Returns list of indices that slide when tile at `pos` is chosen, or null.
 function slidePath(b, n, pos){
@@ -408,40 +511,8 @@ function boardsEqual(a, b){
   for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
-// Greedy one-move hint: enumerate every legal slide (any tile sharing the
-// blank's row/column), simulate it, and pick the move that reduces the total
-// Manhattan distance the most. A move that exactly restores prevBoard (i.e.
-// undoes the player's last move) is avoided unless it is the only move that
-// reduces the distance. Returns {pos, delta, undo} or null if no legal move.
-function betterHint(a, b){
-  var aDec = a.delta < 0, bDec = b.delta < 0;
-  if (aDec !== bDec) return aDec;
-  if (aDec){ // both reduce the distance: prefer non-undo, then biggest drop
-    if (a.undo !== b.undo) return !a.undo;
-    return a.delta < b.delta;
-  }
-  // neither reduces it: prefer the smallest rise, then non-undo
-  if (a.delta !== b.delta) return a.delta < b.delta;
-  if (a.undo !== b.undo) return !a.undo;
-  return false;
-}
-function bestHint(b, n, prevBoard){
-  var cur = manhattanSum(b, n);
-  var best = null;
-  for (var pos = 0; pos < b.length; pos++){
-    var path = slidePath(b, n, pos);
-    if (!path) continue;
-    var copy = b.slice();
-    applySlide(copy, n, path);
-    var cand = {
-      pos: pos,
-      delta: manhattanSum(copy, n) - cur,
-      undo: prevBoard ? boardsEqual(copy, prevBoard) : false
-    };
-    if (!best || betterHint(cand, best)) best = cand;
-  }
-  return best;
-}
+// (The idle hint no longer guesses greedily: it reads step one of the
+// maintained solution path — see scrambleBoard / maintainSolution above.)
 // Number of tiles already on their home cell, and progress as a percentage
 // of the numbered tiles (the blank is not counted as a tile).
 function homeCount(b){
@@ -588,6 +659,8 @@ var imgOverlay = document.getElementById("imgOverlay");
 var imgFull = document.getElementById("imgFull");
 var imgCaption = document.getElementById("imgCaption");
 var thumbEl = document.getElementById("thumb");
+var goalBarEl = document.getElementById("goalBar");
+var hintArrowEl = document.getElementById("hintArrow");
 var winImg = document.getElementById("winImg");
 var revealLineEl = document.getElementById("revealLine");
 var guideHandEl = document.getElementById("guideHand");
@@ -613,7 +686,7 @@ var timerId = null;
 var started = false;
 var won = false;
 var best = null;
-var prevBoard = null;    // board state before the player's last move (undo detection)
+var solutionPath = null; // guaranteed solution of the current board, as click positions (maintained on every move)
 var idleTimerId = null;  // 15s idle-hint countdown
 var guideValue = null;   // tile value currently pulsing for the onboarding guide
 var hintedValue = null;  // tile value currently pulsing for the idle hint
@@ -738,15 +811,26 @@ function clearIdleHint(){
   if (hintedValue !== null && tileEls[hintedValue]) tileEls[hintedValue].classList.remove("pulse");
   hintedValue = null;
   hintTagEl.style.display = "none";
+  hintArrowEl.style.display = "none";
 }
 function showIdleHint(){
   if (won || isSolved(board, N)) return;
+  if (!solutionPath || !solutionPath.length) return;
   hideGuide(); // the hint supersedes the onboarding guide
-  var h = bestHint(board, N, prevBoard);
-  if (!h) return;
-  hintedValue = board[h.pos];
+  // Step one of the maintained solution path: tapping this tile is a
+  // guaranteed step toward solved (following hints always finishes).
+  var click = solutionPath[0];
+  var blank = board.indexOf(0);
+  hintedValue = board[click];
+  if (!hintedValue || !tileEls[hintedValue]) return;
   tileEls[hintedValue].classList.add("pulse");
-  placeOver(hintTagEl, h.pos);
+  var cr = Math.floor(click / N), cc = click % N;
+  var br = Math.floor(blank / N), bc = blank % N;
+  hintArrowEl.textContent = cr === br ? (bc > cc ? "➡" : "⬅") : (br > cr ? "⬇" : "⬆");
+  placeOver(hintArrowEl, click);
+  hintArrowEl.style.display = "block";
+  hintTagEl.textContent = "💡 Hint";
+  placeOver(hintTagEl, click);
   hintTagEl.style.display = "block";
 }
 function resetIdleTimer(){
@@ -781,8 +865,9 @@ function tryMove(pos){
   if (won) return false;
   var path = slidePath(board, N, pos);
   if (!path) return false;
-  prevBoard = board.slice();
+  var boardBefore = board.slice();
   var n = applySlide(board, N, path);
+  if (solutionPath) solutionPath = maintainSolution(solutionPath, N, boardBefore, board);
   moves += n;
   hideGuide();       // first valid slide ends the onboarding guide for this game
   clearIdleHint();
@@ -866,7 +951,8 @@ document.addEventListener("keydown", function(e){
 function showImageOverlay(kind){
   imgOverlayMode = kind;
   imgFull.src = currentImg;
-  imgCaption.textContent = kind === "intro" ? "Tap to shuffle & play" : "Tap to close";
+  imgCaption.textContent = kind === "intro" ? "▶ Tap to shuffle & play" : "Tap to close";
+  imgCaption.classList.toggle("pulse", kind === "intro");
   imgOverlay.classList.add("show");
 }
 function hideImageOverlay(){
@@ -885,7 +971,7 @@ thumbEl.addEventListener("click", function(){
 // ---------- Game flow ----------
 function resetState(){
   moves = 0; seconds = 0; started = false; won = false;
-  prevBoard = null;
+  solutionPath = null;
   stopTimer();
   if (idleTimerId){ clearTimeout(idleTimerId); idleTimerId = null; }
   clearIdleHint();
@@ -895,7 +981,9 @@ function resetState(){
 }
 function startShuffledGame(){
   resetState();
-  board = shuffledBoard(N);
+  var sc = scrambleBoard(N);
+  board = sc.board;
+  solutionPath = sc.solution;
   render();
   showGuide();
   resetIdleTimer();
@@ -937,7 +1025,7 @@ function refreshModeUI(){
   document.getElementById("modeNum").classList.toggle("on", mode === "numbers");
   boardEl.classList.toggle("pic", mode === "picture");
   boardEl.classList.toggle("badges", mode === "picture" && badgeToggle.checked);
-  thumbEl.style.display = mode === "picture" ? "block" : "none";
+  goalBarEl.classList.toggle("show", mode === "picture");
   badgeRow.classList.toggle("show", mode === "picture");
   document.getElementById("uploadBtn").style.display = mode === "picture" ? "" : "none";
   document.getElementById("uploadNote").style.display = mode === "picture" ? "" : "none";
